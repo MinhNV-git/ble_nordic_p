@@ -4,7 +4,12 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <zephyr/types.h>
+#include <stddef.h>
+#include <errno.h>
 #include <zephyr/kernel.h>
+#include <zephyr/sys/printk.h>
+
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/uart.h>
 
@@ -14,7 +19,11 @@
 #include <zephyr/bluetooth/addr.h>
 #include <zephyr/bluetooth/conn.h>
 #include <zephyr/bluetooth/gatt.h>
-#include <bluetooth/services/lbs.h>
+// #include <bluetooth/services/lbs.h>
+
+#include <bluetooth/services/nus.h>
+/* STEP 1.2 - Add the header file for the Settings module */
+#include <zephyr/settings/settings.h>
 
 /* 1000 msec = 1 sec */
 #define SLEEP_TIME_MS   100
@@ -33,6 +42,8 @@
 //define for uart
 #define RECEIVE_BUFF_SIZE 10
 #define RECEIVE_TIMEOUT 100
+
+#define CMD_TEST		'A'
 
 //BLE
 #define DEVICE_NAME CONFIG_BT_DEVICE_NAME
@@ -82,9 +93,9 @@ static const struct bt_data ad[] = {
 // 				    'e',  'm', 'i', '.', 'c', 'o', 'm' };
 
 static const struct bt_data sd[] = {
-        /* 4.2.3 Include the URL data in the scan response packet*/
 		//BT_DATA(BT_DATA_URI, url_data, sizeof(url_data)),
-		BT_DATA_BYTES(BT_DATA_UUID128_ALL, BT_UUID_LBS_VAL),
+		// BT_DATA_BYTES(BT_DATA_UUID128_ALL, BT_UUID_LBS_VAL),
+		BT_DATA_BYTES(BT_DATA_UUID128_ALL, BT_UUID_NUS_VAL),
 };
 
 static struct bt_le_adv_param *adv_param =
@@ -92,48 +103,64 @@ static struct bt_le_adv_param *adv_param =
 	BT_GAP_ADV_FAST_INT_MIN_1,
 	BT_GAP_ADV_FAST_INT_MAX_1,
 	NULL);
-static uint8_t ble_buf_err[] =   {"Bluetooth err\n\r"};
-static uint8_t ble_buf_init[] =   {"Bluetooth init\n\r"};
-static uint8_t ble_connect[] =   {"Bluetooth connect\n\r"};
-static uint8_t ble_disconnect[] =   {"Bluetooth disconnect\n\r"};
-static uint8_t ble_led_on[] =   {"LED on\n\r"};
-static uint8_t ble_led_off[] =   {"LED off\n\r"};
-static uint8_t ble_button[] =   {"Button be touched\n\r"};
+
+static int LED_STATUS[4] = {1,1,1,1};
 
 struct bt_conn *my_conn = NULL;//connection
 
-static void app_led_cb(bool led_state)
+void led_blinky()
 {
-	if(led_state)
+	uint8_t loop;
+	printk("Led blinky!!!!!!!!!!!!!\r\n");
+	for(loop=0;loop<5;loop++)
 	{
-		gpio_pin_toggle_dt(&led2_t);
-		uart_log(uart,ble_led_on, sizeof(ble_led_on),SYS_FOREVER_US);
+		gpio_pin_set_dt(&led0_t, 1);
+		gpio_pin_set_dt(&led1_t, 1);
+		gpio_pin_set_dt(&led2_t, 1);
+		gpio_pin_set_dt(&led3_t, 1);
+		k_msleep(300);
+		gpio_pin_set_dt(&led0_t, 0);
+		gpio_pin_set_dt(&led1_t, 0);
+		gpio_pin_set_dt(&led2_t, 0);
+		gpio_pin_set_dt(&led3_t, 0);
+		k_msleep(300);
+
 	}
-	else
-	{
-		gpio_pin_toggle_dt(&led3_t);
-		uart_log(uart,ble_led_off, sizeof(ble_led_off),SYS_FOREVER_US);
-	}
-		
 }
 
-static bool app_button_cb(void)
+static void bt_receive_cb(struct bt_conn *conn, const uint8_t *const data, uint16_t len)
 {
-	uart_log(uart,ble_button, sizeof(ble_button),SYS_FOREVER_US);
+	int err;int i;
+	char addr[BT_ADDR_LE_STR_LEN] = { 0 };
+	uint8_t data_decode[32]={NULL,};
+
+	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, ARRAY_SIZE(addr));
+	gpio_pin_toggle_dt(&led2_t);
+	printk("Received data from: %s", addr);
+	
+	for(i=0;i<len;i++)
+	{
+		data_decode[i] = *(data+i);
+	}
+	printk(data_decode);
+	if(data_decode[0] == 'A')
+		{
+			led_blinky();
+		}
+
 }
 
-static struct bt_lbs_cb app_callbacks = {
-	.led_cb = app_led_cb,
-	.button_cb = app_button_cb,
+static struct bt_nus_cb nus_cb = {
+	.received = bt_receive_cb,
 };
 
 void on_connected(struct bt_conn *conn, uint8_t err)
 {
 	if (err) {
-		uart_log(uart, ble_buf_err, sizeof(ble_buf_err), SYS_FOREVER_US);
+		printk("ble err!!!!!!");
 		return;
 	}
-	uart_log(uart, ble_connect, sizeof(ble_connect), SYS_FOREVER_US);
+	printk("BLE connected");
 	my_conn = bt_conn_ref(conn);
 
 	/* STEP 3.2  Turn the connection status LED on */
@@ -142,44 +169,64 @@ void on_connected(struct bt_conn *conn, uint8_t err)
 
 void on_disconnected(struct bt_conn *conn, uint8_t reason)
 {
-	uart_log(uart, ble_disconnect, sizeof(ble_disconnect), SYS_FOREVER_US);
+	printk("BLE Disconnect!!!!\r\n");
 	bt_conn_unref(my_conn);
 
 	/* STEP 3.3  Turn the connection status LED off */
 	gpio_pin_toggle_dt(&led1_t);
 }
+static void on_security_changed(struct bt_conn *conn, bt_security_t level, enum bt_security_err err)
+{
+	char addr[BT_ADDR_LE_STR_LEN];
+
+	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
+
+	if (!err) {
+		printk("Security changed: %s level %u\n", addr, level);
+	} else {
+		printk("Security failed: %s level %u err %d\n", addr, level, err);
+	}
+}
 
 struct bt_conn_cb connection_callbacks = {
 	.connected = on_connected,
 	.disconnected = on_disconnected,
+	.security_changed = on_security_changed,
 };
-
-
-
-
 
 void sw0_isr(const struct device *dev, struct gpio_callback *cb, gpio_port_pins_t pins);
 void sw1_isr(const struct device *dev, struct gpio_callback *cb, gpio_port_pins_t pins);
 void sw2_isr(const struct device *dev, struct gpio_callback *cb, gpio_port_pins_t pins);
 void sw3_isr(const struct device *dev, struct gpio_callback *cb, gpio_port_pins_t pins);
 
-void wait_ms(int ms)
+
+/*************************************************/
+static void auth_passkey_display(struct bt_conn *conn, unsigned int passkey)
 {
-	while(ms>0)
-	{
-		k_msleep(1);
-		ms--;
-	}
+	char addr[BT_ADDR_LE_STR_LEN];
+
+	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
+
+	printk("Passkey for %s: %06u\n", addr, passkey);
 }
-void uart_log(const struct device * dev, const uint8_t * buf, size_t len, int32_t timeout)
+
+static void auth_cancel(struct bt_conn *conn)
 {
-	uart_tx(dev,buf,len,timeout);
-	wait_ms(len);
+	char addr[BT_ADDR_LE_STR_LEN];
+
+	bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
+
+	printk("Pairing cancelled: %s\n", addr);
 }
+static struct bt_conn_auth_cb conn_auth_callbacks = {
+	.passkey_display = auth_passkey_display,
+	.cancel = auth_cancel,
+};
+/********************************************************/
 
 int main(void)
 {
-	int ret;
+	int ret,err;
 	bt_addr_le_t addr;
 
 	/* GPIO configure for led and button */ 
@@ -215,38 +262,45 @@ int main(void)
 
 	/* uart_tx and set uart_rx */
 	uart_rx_enable(uart ,rx_buf,sizeof(rx_buf),RECEIVE_TIMEOUT);
-	uart_log(uart, tx_buf, sizeof(tx_buf),7000);
+	printk(tx_buf);
 
 
 	/* BLE */
 	ret = bt_addr_le_from_str("FF:EE:DD:CC:BB:AA", "random", &addr);
 
+	err = bt_conn_auth_cb_register(&conn_auth_callbacks);
+	if (err) {
+		printk("Failed to register authorization callbacks.\n");
+		return;
+	}
+
 	bt_conn_cb_register(&connection_callbacks);
 
-	ret = bt_lbs_init(&app_callbacks);
+	ret = bt_nus_init(&nus_cb);
 	if (ret) {
-		uart_log(uart, ble_buf_err, sizeof(ble_buf_err),SYS_FOREVER_US);
+		printk("BLE ERR !!!!!");
 		return;
 	}
 	
 	if(ret)
 	{
-		uart_log(uart, ble_buf_err, sizeof(ble_buf_err), SYS_FOREVER_US);
+		printk("BLE ERR !!!!!");
 	}
 
 	bt_id_create(&addr, NULL);
 
 	ret = bt_enable(NULL);
 	if (ret) {
-		uart_log(uart, ble_buf_err, sizeof(ble_buf_err), SYS_FOREVER_US);
+		printk("BLE ERR !!!!!");
 		return;
 	}
+	settings_load();
 	
-	uart_log(uart, ble_buf_init, sizeof(ble_buf_init), SYS_FOREVER_US);
+	printk("BLE init done !!!!!");
 
 	ret = bt_le_adv_start(adv_param, ad, ARRAY_SIZE(ad), sd, ARRAY_SIZE(sd));
 	if (ret) {
-		uart_log(uart, ble_buf_err, sizeof(ble_buf_err), SYS_FOREVER_US);
+		printk("BLE ERR !!!!!");
 		return;
 	}
 	
@@ -254,26 +308,81 @@ int main(void)
 	return 0;
 }
 
+void led_control(int led_stt)
+{
+	if(LED_STATUS[led_stt]==1)
+	{
+		LED_STATUS[led_stt]=0;
+	}
+	else
+		LED_STATUS[led_stt]=1;
 
+	switch (led_stt)
+	{
+	case 0:
+		gpio_pin_set_dt(&led0_t,LED_STATUS[led_stt]);
+		break;
+	case 1:
+		gpio_pin_set_dt(&led1_t,LED_STATUS[led_stt]);
+		break;
+	case 2:
+		gpio_pin_set_dt(&led2_t,LED_STATUS[led_stt]);
+		break;
+	case 3:
+		gpio_pin_set_dt(&led3_t,LED_STATUS[led_stt]);
+		break;
+	
+	default:
+		break;
+	}
+}
 /* callback functions for BUTTON and UART*/
 void sw0_isr(const struct device *dev, struct gpio_callback *cb, uint32_t pins)
 {
-        gpio_pin_toggle_dt(&led0_t);
+		uint8_t nus_tx[5]={'s','w','0',':','1'};
+		int value;
+        led_control(0);
+		if(LED_STATUS[0])
+			nus_tx[4] = '1';
+		else
+			nus_tx[4]='0';
+		bt_nus_send(my_conn,nus_tx,5);
 }
 
 void sw1_isr(const struct device *dev, struct gpio_callback *cb, uint32_t pins)
 {
-        gpio_pin_toggle_dt(&led1_t);
+		uint8_t nus_tx[5]={'s','w','1',':','1'};
+		int value;
+        led_control(1);
+		if(LED_STATUS[1])
+			nus_tx[4] = '1';
+		else
+			nus_tx[4]='0';
+		bt_nus_send(my_conn,nus_tx,5);
 }
 
 void sw2_isr(const struct device *dev, struct gpio_callback *cb, uint32_t pins)
 {
-        gpio_pin_toggle_dt(&led2_t);
+		uint8_t nus_tx[5]={'s','w','2',':','1'};
+		int value;
+        led_control(2);
+		if(LED_STATUS[2])
+			nus_tx[4] = '1';
+		else
+			nus_tx[4]='0';
+		bt_nus_send(my_conn,nus_tx,5);
 }
 
 void sw3_isr(const struct device *dev, struct gpio_callback *cb, uint32_t pins)
 {
-        gpio_pin_toggle_dt(&led3_t);
+		uint8_t nus_tx[5]={'s','w','3',':','1'};
+		int value;
+        led_control(3);
+		if(LED_STATUS[3])
+			nus_tx[4] = '1';
+		else
+			nus_tx[4]='0';
+		bt_nus_send(my_conn,nus_tx,5);
 }
 
 static void uart_cb(const struct device *dev, struct uart_event *evt, void *user_data)
@@ -281,17 +390,16 @@ static void uart_cb(const struct device *dev, struct uart_event *evt, void *user
 	switch (evt->type) {
 	case UART_RX_RDY:
 	if((evt->data.rx.len) == 1){
-		if(evt->data.rx.buf[evt->data.rx.offset] == '1')
-		{	
-			gpio_pin_toggle_dt(&led0_t);
-			// bt_le_adv_update_data(ad, ARRAY_SIZE(ad), sd, ARRAY_SIZE(sd));
-		}
-		else if (evt->data.rx.buf[evt->data.rx.offset] == '2')
-			gpio_pin_toggle_dt(&led1_t);
-		else if (evt->data.rx.buf[evt->data.rx.offset] == '3')
-			gpio_pin_toggle_dt(&led2_t);
-		else if (evt->data.rx.buf[evt->data.rx.offset] == '4')
-			gpio_pin_toggle_dt(&led3_t);
+		// if(evt->data.rx.buf[evt->data.rx.offset] == '1')
+		// {	
+		// 	gpio_pin_toggle_dt(&led0_t);
+		// }
+		// else if (evt->data.rx.buf[evt->data.rx.offset] == '2')
+		// 	gpio_pin_toggle_dt(&led1_t);
+		// else if (evt->data.rx.buf[evt->data.rx.offset] == '3')
+		// 	gpio_pin_toggle_dt(&led2_t);
+		// else if (evt->data.rx.buf[evt->data.rx.offset] == '4')
+		// 	gpio_pin_toggle_dt(&led3_t);
 		}
 	break;
 	case UART_RX_DISABLED:
@@ -303,3 +411,4 @@ static void uart_cb(const struct device *dev, struct uart_event *evt, void *user
 		break;
 	}
 }
+
